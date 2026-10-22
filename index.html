@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<title>SVV Meter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body { width: 100%; height: 100%; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+  #testView { position: fixed; inset: 0; background: #000; display: flex; justify-content: center; align-items: center; }
+  #svvLine { width: 4px; height: 75vh; background: #fff; border-radius: 2px; transition: background 0.15s; pointer-events: none; }
+  #topBar { position: fixed; top: 16px; right: 16px; z-index: 20; }
+  button { background: #1a1a1a; color: #888; border: 1px solid #333; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  #diagBar { position: fixed; bottom: 10px; left: 10px; right: 10px; font-size: 11px; color: #333; text-align: center; pointer-events: none; z-index: 20; }
+  #resultsView { position: fixed; inset: 0; background: #111; padding: 20px; display: none; flex-direction: column; z-index: 30; overflow-y: auto; }
+  .card { background: #1e1e1e; padding: 14px; border-radius: 8px; margin-bottom: 12px; }
+  .big { font-size: 26px; font-weight: bold; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  th, td { border-bottom: 1px solid #333; padding: 8px 4px; text-align: left; }
+</style>
+</head>
+<body>
+
+<div id="topBar">
+  <button id="toggleBtn" onclick="toggleResults(event)">Results (0)</button>
+</div>
+
+<div id="testView" onclick="recordTrial()">
+  <div id="svvLine"></div>
+</div>
+
+<div id="diagBar">Initializing sensors...</div>
+
+<div id="resultsView">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2>SVV Results</h2>
+    <button onclick="toggleResults(event)" style="color:#fff; border-color:#555;">Back to Test</button>
+  </div>
+  <div class="card">
+    <div>Live Phone Tilt Angle</div>
+    <div class="big" id="liveReadout">Waiting...</div>
+  </div>
+  <div class="card">
+    <div>Signed Average (Mean ± SD)</div>
+    <div class="big" id="meanSigned">--</div>
+  </div>
+  <div class="card">
+    <div>Mean Absolute Error</div>
+    <div class="big" id="meanAbs">--</div>
+  </div>
+  <button onclick="clearTrials()" style="margin-bottom:12px; background:#522; color:#faa; border-color:#833;">Clear All Trials</button>
+  <table>
+    <thead><tr><th>#</th><th>Angle (°)</th><th>Direction</th></tr></thead>
+    <tbody id="trialList"></tbody>
+  </table>
+</div>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
+
+  let currentAngle = null;
+  let activeSource = "None";
+  let trials = [];
+  const diagBar = document.getElementById('diagBar');
+  const liveReadout = document.getElementById('liveReadout');
+
+  function updateAngle(deg, source) {
+    if (isNaN(deg)) return;
+    currentAngle = currentAngle === null ? deg : (currentAngle * 0.7 + deg * 0.3);
+    activeSource = source;
+    diagBar.textContent = "Ready • Tap anywhere to record";
+    liveReadout.textContent = (currentAngle >= 0 ? "+" : "") + currentAngle.toFixed(1) + "°";
+  }
+
+  try {
+    const SensorClass = window.GravitySensor || window.Accelerometer;
+    if (SensorClass) {
+      const sensor = new SensorClass({ frequency: 30 });
+      sensor.addEventListener('reading', () => {
+        if (sensor.x != null && sensor.y != null) {
+          updateAngle(Math.atan2(sensor.x, sensor.y) * (180 / Math.PI), "W3C");
+        }
+      });
+      sensor.start();
+    }
+  } catch (e) {}
+
+  window.addEventListener('devicemotion', (e) => {
+    if (activeSource === "W3C") return;
+    const acc = e.accelerationIncludingGravity;
+    if (acc && (acc.x !== null || acc.y !== null)) {
+      updateAngle(Math.atan2(acc.x || 0, acc.y || 0) * (180 / Math.PI), "Motion");
+    }
+  }, true);
+
+  window.addEventListener('deviceorientation', (e) => {
+    if (activeSource !== "None" && activeSource !== "Orientation") return;
+    if (e.gamma !== null && e.beta !== null) {
+      const radG = e.gamma * (Math.PI / 180);
+      const radB = e.beta * (Math.PI / 180);
+      const x = -Math.cos(radB) * Math.sin(radG);
+      const y = Math.sin(radB);
+      updateAngle(Math.atan2(x, y) * (180 / Math.PI), "Orientation");
+    }
+  }, true);
+
+  function recordTrial() {
+    if (currentAngle === null) return;
+    trials.push(currentAngle);
+    document.getElementById('toggleBtn').textContent = "Results (" + trials.length + ")";
+    const line = document.getElementById('svvLine');
+    line.style.background = "#0f0";
+    setTimeout(() => line.style.background = "#fff", 180);
+    if (navigator.vibrate) navigator.vibrate(40);
+    renderStats();
+  }
+
+  function toggleResults(e) {
+    e.stopPropagation();
+    const rv = document.getElementById('resultsView');
+    rv.style.display = (rv.style.display === 'flex') ? 'none' : 'flex';
+    renderStats();
+  }
+
+  function clearTrials() {
+    trials = [];
+    document.getElementById('toggleBtn').textContent = "Results (0)";
+    renderStats();
+  }
+
+  function renderStats() {
+    const tbody = document.getElementById('trialList');
+    tbody.innerHTML = trials.map((t, i) =>
+      `<tr><td>${i + 1}</td><td>${(t >= 0 ? "+" : "") + t.toFixed(1)}°</td><td>${t >= 0 ? "CW (Right)" : "CCW (Left)"}</td></tr>`
+    ).join('');
+    if (!trials.length) {
+      document.getElementById('meanSigned').textContent = "--";
+      document.getElementById('meanAbs').textContent = "--";
+      return;
+    }
+    const mean = trials.reduce((a, b) => a + b, 0) / trials.length;
+    const absMean = trials.reduce((a, b) => a + Math.abs(b), 0) / trials.length;
+    const sd = Math.sqrt(trials.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / trials.length);
+    document.getElementById('meanSigned').textContent = `${mean >= 0 ? "+" : ""}${mean.toFixed(2)}° ± ${sd.toFixed(2)}°`;
+    document.getElementById('meanAbs').textContent = `${absMean.toFixed(2)}°`;
+  }
+</script>
+</body>
+</html>
